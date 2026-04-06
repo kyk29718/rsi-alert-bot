@@ -58,6 +58,9 @@ def run_bot():
 
     send_telegram("RSI Alert Bot is now Live ")
 
+
+    print(requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates").json())
+
     while True:
         # This print helps you see the bot is "alive" in Render logs
         print(f"⏰ Heartbeat: {time.strftime('%H:%M:%S')} - Checking Market...")
