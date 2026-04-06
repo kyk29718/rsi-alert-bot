@@ -1,28 +1,34 @@
-import websocket
-import json
-import pandas as pd
-import numpy as np
-import threading
-import time
-import os
 import requests
+import pandas as pd
+import time
+import threading
+import os
 from flask import Flask
 
 # ==============================
-# 🔐 CONFIG
+# 🌐 FLASK APP (FOR RENDER)
+# ==============================
+app = Flask(__name__)
+
+# ==============================
+# 🔐 CONFIGURATION
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-SYMBOL = "BTCUSDTPERP"
+SYMBOL = "BTCUSD"                      # Spot BTC/USD
+TIMEFRAME = "1m"                       # Use 1m for testing (change later to 15m)
 RSI_PERIOD = 14
-
-app = Flask(__name__)
+BASE_URL = "https://api.india.delta.exchange"
 
 # ==============================
-# 📩 TELEGRAM
+# 📩 TELEGRAM FUNCTION
 # ==============================
 def send_telegram(msg):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Missing BOT_TOKEN or CHAT_ID")
+        return
+
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         res = requests.post(
@@ -31,141 +37,145 @@ def send_telegram(msg):
             timeout=10
         )
 
-        if not res.json().get("ok"):
-            print("Telegram Error:", res.text)
+        data = res.json()
+        if not data.get("ok"):
+            print("❌ Telegram Error:", data)
 
     except Exception as e:
-        print("Telegram Exception:", e)
+        print("📡 Telegram Exception:", e)
 
 # ==============================
-# 📊 RSI
+# 📊 RSI CALCULATION
 # ==============================
-def calculate_rsi(prices, period=14):
-    delta = np.diff(prices)
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+def calculate_rsi(df, period=14):
+    delta = df['close'].astype(float).diff()
 
-    avg_gain = pd.Series(gain).rolling(period).mean()
-    avg_loss = pd.Series(loss).rolling(period).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
 
-    rs = avg_gain / avg_loss.replace(0, 0.00001)
-    rsi = 100 - (100 / (1 + rs))
-
-    return rsi
+    rs = gain / loss.replace(0, 0.00001)
+    return 100 - (100 / (1 + rs))
 
 # ==============================
 # 🤖 BOT LOGIC
 # ==============================
-price_data = []
-last_signal = None
+def run_bot():
+    last_signal = None
+    last_candle_time = None
 
-def on_message(ws, message):
-    global price_data, last_signal
-
-    try:
-        msg = json.loads(message)
-
-        if msg.get("type") == "trade":
-            for trade in msg.get("data", []):
-                price = float(trade["price"])
-                price_data.append(price)
-
-                if len(price_data) > 100:
-                    price_data = price_data[-100:]
-
-                if len(price_data) >= RSI_PERIOD:
-                    rsi_series = calculate_rsi(price_data, RSI_PERIOD)
-
-                    if len(rsi_series.dropna()) < 2:
-                        return
-
-                    curr_rsi = round(rsi_series.iloc[-1], 2)
-                    prev_rsi = round(rsi_series.iloc[-2], 2)
-
-                    print(f"Price: {price} | RSI: {curr_rsi}")
-
-                    if prev_rsi < 50 <= curr_rsi and last_signal != "LONG":
-                        send_telegram(f"🟢 LONG SIGNAL\nPrice: {price}\nRSI: {curr_rsi}")
-                        last_signal = "LONG"
-
-                    elif prev_rsi > 50 >= curr_rsi and last_signal != "SHORT":
-                        send_telegram(f"🔴 SHORT SIGNAL\nPrice: {price}\nRSI: {curr_rsi}")
-                        last_signal = "SHORT"
-
-    except Exception as e:
-        print("Message Error:", e)
-
-def on_open(ws):
-    print("✅ WebSocket Connected")
-
-    subscribe_msg = {
-        "type": "subscribe",
-        "payload": {
-            "channels": [
-                {
-                    "name": "trades",
-                    "symbols": [SYMBOL]
-                }
-            ]
-        }
-    }
-
-    ws.send(json.dumps(subscribe_msg))
-
-def on_error(ws, error):
-    print("WebSocket Error:", error)
-
-def on_close(ws, code, msg):
-    print("WebSocket Closed:", code, msg)
-
-# ==============================
-# 🔄 AUTO RECONNECT
-# ==============================
-def start_bot():
-    ws_url = "wss://api.delta.exchange/v2/ws"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Origin": "https://www.delta.exchange"
-    }
+    print(f"🚀 Spot BTC RSI Bot Started ({SYMBOL})")
+    send_telegram(f"🚀 Spot BTC RSI Bot Started!\nSymbol: {SYMBOL}\nTF: {TIMEFRAME}")
 
     while True:
         try:
-            ws = websocket.WebSocketApp(
-                ws_url,
-                header=[f"{k}: {v}" for k, v in headers.items()],
-                on_open=on_open,
-                on_message=on_message,
-                on_error=on_error,
-                on_close=on_close
-            )
+            print("\n📡 Fetching candles...")
 
-            ws.run_forever()
+            url = f"{BASE_URL}/v2/history/candles"
+            params = {
+                "symbol": SYMBOL,
+                "resolution": TIMEFRAME,
+                "limit": 100
+            }
+
+            response = requests.get(url, params=params, timeout=15)
+
+            print("Status Code:", response.status_code)
+
+            data = response.json()
+            print("API Response (short):", str(data)[:200])
+
+            result = data.get("result", [])
+
+            # ❌ No data
+            if not result:
+                print("❌ No candle data received")
+                time.sleep(30)
+                continue
+
+            # ❌ Not enough data
+            if len(result) < 20:
+                print("❌ Not enough data for RSI")
+                time.sleep(30)
+                continue
+
+            # ======================
+            # DATA PROCESSING
+            # ======================
+            df = pd.DataFrame(result)
+            df['time'] = pd.to_numeric(df['time'])
+            df['close'] = pd.to_numeric(df['close'])
+            df = df.sort_values('time')
+
+            df['rsi'] = calculate_rsi(df, RSI_PERIOD)
+
+            # Use closed candles only
+            current_candle = df.iloc[-2]
+            previous_candle = df.iloc[-3]
+
+            candle_time = current_candle['time']
+
+            # Avoid duplicate processing
+            if candle_time == last_candle_time:
+                print("⏳ Waiting for new candle...")
+                time.sleep(20)
+                continue
+
+            last_candle_time = candle_time
+
+            curr_rsi = round(current_candle['rsi'], 2)
+            prev_rsi = round(previous_candle['rsi'], 2)
+            price = current_candle['close']
+
+            print(f"⏰ Candle Closed | Price: {price} | RSI: {curr_rsi}")
+
+            # ======================
+            # 📈 STRATEGY (RSI 50 CROSS)
+            # ======================
+
+            # LONG
+            if prev_rsi < 50 and curr_rsi >= 50 and last_signal != "LONG":
+                msg = (f"🟢 LONG SIGNAL\n"
+                       f"Price: {price}\n"
+                       f"RSI: {curr_rsi}\n"
+                       f"TF: {TIMEFRAME}")
+                send_telegram(msg)
+                last_signal = "LONG"
+
+            # SHORT
+            elif prev_rsi > 50 and curr_rsi <= 50 and last_signal != "SHORT":
+                msg = (f"🔴 SHORT SIGNAL\n"
+                       f"Price: {price}\n"
+                       f"RSI: {curr_rsi}\n"
+                       f"TF: {TIMEFRAME}")
+                send_telegram(msg)
+                last_signal = "SHORT"
 
         except Exception as e:
-            print("Reconnect Error:", e)
+            print("❌ Loop Error:", e)
+            time.sleep(15)
 
-        print("🔄 Reconnecting in 5s...")
-        time.sleep(5)
+        time.sleep(30)
 
 # ==============================
 # 🌐 FLASK ROUTES
 # ==============================
 @app.route("/")
 def home():
-    return "Bot is running 🚀"
+    return "BTC Spot RSI Bot is Running 🚀", 200
 
 @app.route("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok"}, 200
 
 # ==============================
 # ▶️ MAIN
 # ==============================
 if __name__ == "__main__":
-    print("🚀 Bot starting...")
+    print("🚀 Starting Flask + RSI Bot...")
 
-    threading.Thread(target=start_bot, daemon=True).start()
+    # Start bot in background
+    threading.Thread(target=run_bot, daemon=True).start()
 
+    # Start Flask server
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
