@@ -4,26 +4,20 @@ import requests
 import time
 import threading
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==============================
-# 🔐 TELEGRAM CONFIG (DO NOT LOG TOKEN)
+# 🔐 TELEGRAM (ENV VARIABLES)
 # ==============================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("⚠️ BOT_TOKEN or CHAT_ID missing in environment variables")
+BOT_TOKEN = os.getenv("8764213237:AAF9Ipslfo6wbTptG5f9SMXyHhS0FfGaZS0")
+CHAT_ID = os.getenv("5939554496")
 
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": msg}
-        res = requests.post(url, data=payload)
-        if res.status_code != 200:
-            print(f"❌ Telegram Error: {res.text}")
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        print("Sent:", msg)
     except Exception as e:
-        print(f"📡 Telegram Exception: {e}")
+        print("Telegram Error:", e)
 
 # ==============================
 # ⚙️ SETTINGS
@@ -33,10 +27,12 @@ timeframe = '15m'
 RSI_PERIOD = 14
 TARGET_POINTS = 200
 
-exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+exchange = ccxt.binance({
+    'options': {'defaultType': 'future'}
+})
 
 # ==============================
-# RSI CALCULATION
+# 📊 RSI FUNCTION
 # ==============================
 def rsi(data, period=14):
     delta = data['close'].diff()
@@ -46,75 +42,88 @@ def rsi(data, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==============================
-# BOT LOOP
+# 🔁 BOT LOOP
 # ==============================
 def run_bot():
     last_signal = None
     last_candle_time = None
 
-    print("🚀 RSI Bot Started")
-    send_telegram("🚀 RSI Bot Initialized - Monitoring BTC/USDT 15m")
+    send_telegram("🚀 RSI Alert Bot Started")
 
     while True:
         try:
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
+
             df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
             df['rsi'] = rsi(df, RSI_PERIOD)
 
+            # Use only closed candle
             candle_time = df['time'].iloc[-2]
+
             if candle_time == last_candle_time:
                 time.sleep(30)
                 continue
+
             last_candle_time = candle_time
 
             prev_rsi = df['rsi'].iloc[-3]
             curr_rsi = df['rsi'].iloc[-2]
+
             price = df['close'].iloc[-2]
             high = df['high'].iloc[-2]
             low = df['low'].iloc[-2]
 
-            print(f"Candle Closed | Price: {price} | RSI: {round(curr_rsi,2)}")
+            print(prev_rsi, curr_rsi)
 
+            # LONG
             if prev_rsi < 50 and curr_rsi >= 50 and last_signal != "LONG":
-                msg = f"🚀 LONG\nPrice: {price}\nSL: {low}\nTarget: {price + TARGET_POINTS}"
+                msg = f"""
+🚀 LONG SIGNAL
+
+Price: {price}
+SL: {low}
+Target: {price + TARGET_POINTS}
+RSI: {round(curr_rsi,2)}
+"""
                 send_telegram(msg)
                 last_signal = "LONG"
 
+            # SHORT
             elif prev_rsi > 50 and curr_rsi <= 50 and last_signal != "SHORT":
-                msg = f"🔻 SHORT\nPrice: {price}\nSL: {high}\nTarget: {price - TARGET_POINTS}"
+                msg = f"""
+🔻 SHORT SIGNAL
+
+Price: {price}
+SL: {high}
+Target: {price - TARGET_POINTS}
+RSI: {round(curr_rsi,2)}
+"""
                 send_telegram(msg)
                 last_signal = "SHORT"
 
             time.sleep(30)
+
         except Exception as e:
-            print("Loop Error:", e)
-            time.sleep(15)
+            print("Error:", e)
+            time.sleep(10)
 
 # ==============================
-# HEALTH CHECK SERVER
+# 🌐 KEEP ALIVE SERVER (IMPORTANT)
 # ==============================
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"RSI Bot is running on port 10000")
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
 def keep_alive():
-    port = 10000  # Hardcoded for Render
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"✅ Web Server running on port {port}")
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'Bot is running')
+
+    server = HTTPServer(('0.0.0.0', 10000), Handler)
     server.serve_forever()
 
 # ==============================
-# START BOT
+# 🚀 START BOTH THREADS
 # ==============================
-if __name__ == "__main__":
-    threading.Thread(target=keep_alive, daemon=True).start()
-    run_bot()
+threading.Thread(target=keep_alive).start()
+threading.Thread(target=run_bot).start()
