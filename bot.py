@@ -20,9 +20,10 @@ app = Flask(__name__)
 # 🔐 CONFIG
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "BTCUSD"
-TIMEFRAME = "1m"
+TIMEFRAME = "5m"   # ✅ FIXED (was 1m)
 RSI_PERIOD = 14
 BASE_URL = "https://api.india.delta.exchange"
 
@@ -47,19 +48,25 @@ def calculate_rsi(df, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==============================
-# 📊 GET RSI (FOR COMMAND)
+# 📊 GET RSI (FOR /rsi)
 # ==============================
 def get_latest_rsi():
     try:
         url = f"{BASE_URL}/v2/history/candles"
-        params = {"symbol": SYMBOL, "resolution": TIMEFRAME, "limit": 100}
+        params = {
+            "symbol": SYMBOL,
+            "resolution": TIMEFRAME,
+            "limit": 200   # ✅ FIXED
+        }
 
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
         result = data.get("result", [])
 
-        if not result or len(result) < 20:
-            return "❌ Not enough data"
+        logging.info(f"Candle count: {len(result)}")  # ✅ DEBUG
+
+        if not result or len(result) < RSI_PERIOD + 5:
+            return "❌ Not enough data from API"
 
         df = pd.DataFrame(result)
         df['time'] = pd.to_numeric(df['time'])
@@ -90,13 +97,18 @@ def run_bot():
     while True:
         try:
             url = f"{BASE_URL}/v2/history/candles"
-            params = {"symbol": SYMBOL, "resolution": TIMEFRAME, "limit": 100}
+            params = {
+                "symbol": SYMBOL,
+                "resolution": TIMEFRAME,
+                "limit": 200
+            }
 
             res = requests.get(url, params=params, timeout=10)
             data = res.json()
             result = data.get("result", [])
 
-            if not result or len(result) < 20:
+            if not result or len(result) < RSI_PERIOD + 5:
+                logging.warning("Not enough data for signals")
                 time.sleep(30)
                 continue
 
@@ -122,9 +134,6 @@ def run_bot():
 
             logging.info(f"Price: {price} | RSI: {curr_rsi}")
 
-            # IMPORTANT: send to YOUR group ID (set manually)
-            GROUP_CHAT_ID = os.getenv("CHAT_ID")
-
             if prev_rsi < 50 <= curr_rsi and last_signal != "LONG":
                 send_telegram(f"🟢 LONG\nPrice: {price}\nRSI: {curr_rsi}", GROUP_CHAT_ID)
                 last_signal = "LONG"
@@ -140,7 +149,7 @@ def run_bot():
         time.sleep(30)
 
 # ==============================
-# 🤖 TELEGRAM LISTENER (GROUP)
+# 🤖 TELEGRAM LISTENER
 # ==============================
 def listen_telegram():
     logging.info("🤖 Telegram listener started")
@@ -168,32 +177,9 @@ def listen_telegram():
                 if not text:
                     continue
 
-                logging.info(f"📩 {text} from {chat_id}")
+                logging.info(f"📩 {text}")
 
-                # ======================
-                # /rsi COMMAND (GROUP SAFE)
-                # ======================
                 if "/rsi" in text.lower():
-                    reply = get_latest_rsi()
-                    send_telegram(reply, chat_id)
-
-                # OPTIONAL: START BUTTON (works mainly in private)
-                elif text.lower() == "/start":
-                    keyboard = {
-                        "keyboard": [[{"text": "📊 Get RSI"}]],
-                        "resize_keyboard": True
-                    }
-
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": "🤖 Bot Ready!",
-                            "reply_markup": keyboard
-                        }
-                    )
-
-                elif text == "📊 Get RSI":
                     reply = get_latest_rsi()
                     send_telegram(reply, chat_id)
 
