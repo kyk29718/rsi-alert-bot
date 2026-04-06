@@ -4,14 +4,19 @@ import requests
 import time
 import threading
 import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==============================
 # 🔐 TELEGRAM (ENV VARIABLES)
 # ==============================
+# Fetching by KEY name. Ensure these keys are set in Render's dashboard.
 BOT_TOKEN = os.getenv("8764213237:AAF9Ipslfo6wbTptG5f9SMXyHhS0FfGaZS0")
 CHAT_ID = os.getenv("5939554496")
 
 def send_telegram(msg):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Error: BOT_TOKEN or CHAT_ID not set in Environment Variables")
+        return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
@@ -48,16 +53,12 @@ def run_bot():
     last_signal = None
     last_candle_time = None
 
-    print("🚀 Bot started (console)")
+    print("🚀 Bot logic started...")
     send_telegram("🚀 RSI Alert Bot Started")
 
     while True:
-        print("🔁 Bot loop running...")   # DEBUG
-
         try:
-            print("📡 Fetching data...")  # DEBUG
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
-
             df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
             df['rsi'] = rsi(df, RSI_PERIOD)
 
@@ -77,62 +78,54 @@ def run_bot():
             high = df['high'].iloc[-2]
             low = df['low'].iloc[-2]
 
-            print("RSI:", prev_rsi, "→", curr_rsi)  # DEBUG
+            print(f"Candle closed at {price}. RSI: {round(curr_rsi, 2)}")
 
-            # ================= SIGNAL =================
-            # LONG
+            # LONG Signal
             if prev_rsi < 50 and curr_rsi >= 50 and last_signal != "LONG":
-                msg = f"""
-🚀 LONG SIGNAL
-
-Price: {price}
-SL: {low}
-Target: {price + TARGET_POINTS}
-RSI: {round(curr_rsi,2)}
-"""
+                msg = f"🚀 LONG SIGNAL\n\nPrice: {price}\nSL: {low}\nTarget: {price + TARGET_POINTS}\nRSI: {round(curr_rsi,2)}"
                 send_telegram(msg)
                 last_signal = "LONG"
 
-            # SHORT
+            # SHORT Signal
             elif prev_rsi > 50 and curr_rsi <= 50 and last_signal != "SHORT":
-                msg = f"""
-🔻 SHORT SIGNAL
-
-Price: {price}
-SL: {high}
-Target: {price - TARGET_POINTS}
-RSI: {round(curr_rsi,2)}
-"""
+                msg = f"🔻 SHORT SIGNAL\n\nPrice: {price}\nSL: {high}\nTarget: {price - TARGET_POINTS}\nRSI: {round(curr_rsi,2)}"
                 send_telegram(msg)
                 last_signal = "SHORT"
 
             time.sleep(30)
 
         except Exception as e:
-            print("❌ Error:", e)
+            print("❌ Bot Loop Error:", e)
             time.sleep(10)
 
 # ==============================
-# 🌐 KEEP ALIVE (FOR RENDER FREE)
+# 🌐 WEB SERVER (RENDER HEALTH CHECK)
 # ==============================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Bot is active')
+
+    def do_HEAD(self):
+        # This fixes the "501 Unsupported method ('HEAD')" error
+        self.send_response(200)
+        self.end_headers()
+
 def keep_alive():
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'Bot is running')
-
-    server = HTTPServer(('0.0.0.0', 10000), Handler)
+    # Render provides a PORT env variable; default to 10000 if not found
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"✅ Health check server listening on port {port}")
     server.serve_forever()
 
 # ==============================
-# 🚀 START (IMPORTANT FIX)
+# 🚀 MAIN ENTRY
 # ==============================
 if __name__ == "__main__":
-    print("File started")
-
-    import threading
-    threading.Thread(target=keep_alive).start()
-    run_bot()   # 👈 main thread runs server
+    # Start the web server in a background thread
+    web_thread = threading.Thread(target=keep_alive, daemon=True)
+    web_thread.start()
+    
+    # Start the bot in the main thread
+    run_bot()
