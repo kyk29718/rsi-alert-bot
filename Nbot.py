@@ -131,5 +131,5 @@ def keep_alive():
 # 🚀 START (IMPORTANT FIX)
 # ==============================
 if __name__ == "__main__":
-    threading.Thread(target=keep_alive).start()
-    run_bot()   # 👈 IMPORTANT (no thread here)
+    threading.Thread(target=run_bot).start()
+    keep_alive()   # 👈 main thread runs server
