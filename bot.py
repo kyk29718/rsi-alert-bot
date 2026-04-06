@@ -7,92 +7,58 @@ import logging
 from flask import Flask
 
 # ==============================
-# 🔧 LOGGING
+# LOGGING
 # ==============================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
 # ==============================
-# 🔐 CONFIG
+# CONFIG
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "BTCUSD"
-TIMEFRAME = "5m"   # ✅ FIXED (was 1m)
+TIMEFRAME = "15m"   # ✅ UPDATED
 RSI_PERIOD = 14
+EMA_PERIOD = 50
+TARGET_POINTS = 200
+
 BASE_URL = "https://api.india.delta.exchange"
 
 # ==============================
-# 📩 TELEGRAM SEND
+# TELEGRAM
 # ==============================
-def send_telegram(msg, chat_id):
+def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": chat_id, "text": msg}, timeout=10)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except Exception as e:
-        logging.error(f"Telegram Error: {e}")
+        logging.error(e)
 
 # ==============================
-# 📊 RSI CALCULATION
+# INDICATORS
 # ==============================
-def calculate_rsi(df, period=14):
-    delta = df['close'].astype(float).diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+def calculate_rsi(df):
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(RSI_PERIOD).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(RSI_PERIOD).mean()
     rs = gain / loss.replace(0, 0.00001)
     return 100 - (100 / (1 + rs))
 
-# ==============================
-# 📊 GET RSI (FOR /rsi)
-# ==============================
-def get_latest_rsi():
-    try:
-        url = f"{BASE_URL}/v2/history/candles"
-        params = {
-            "symbol": SYMBOL,
-            "resolution": TIMEFRAME,
-            "limit": 200   # ✅ FIXED
-        }
-
-        res = requests.get(url, params=params, timeout=10)
-        data = res.json()
-        result = data.get("result", [])
-
-        logging.info(f"Candle count: {len(result)}")  # ✅ DEBUG
-
-        if not result or len(result) < RSI_PERIOD + 5:
-            return "❌ Not enough data from API"
-
-        df = pd.DataFrame(result)
-        df['time'] = pd.to_numeric(df['time'])
-        df['close'] = pd.to_numeric(df['close'])
-        df = df.sort_values('time')
-
-        df['rsi'] = calculate_rsi(df, RSI_PERIOD)
-
-        latest = df.iloc[-2]
-
-        price = latest['close']
-        rsi = round(latest['rsi'], 2)
-
-        return f"📊 BTC RSI\nPrice: {price}\nRSI: {rsi}\nTF: {TIMEFRAME}"
-
-    except Exception as e:
-        return f"Error: {e}"
+def calculate_ema(df):
+    return df['close'].ewm(span=EMA_PERIOD, adjust=False).mean()
 
 # ==============================
-# 🤖 AUTO SIGNAL BOT
+# BOT
 # ==============================
 def run_bot():
     last_signal = None
-    last_candle_time = None
+    last_time = None
 
-    logging.info("🔥 Auto signal bot started")
+    logging.info("🔥 Smart Trade Bot Started")
+    send_telegram("🚀 Smart Trade Bot Started (15m TF)")
 
     while True:
         try:
@@ -103,105 +69,109 @@ def run_bot():
                 "limit": 200
             }
 
-            res = requests.get(url, params=params, timeout=10)
+            res = requests.get(url, params=params)
             data = res.json()
             result = data.get("result", [])
 
-            if not result or len(result) < RSI_PERIOD + 5:
-                logging.warning("Not enough data for signals")
+            if len(result) < 50:
                 time.sleep(30)
                 continue
 
             df = pd.DataFrame(result)
             df['time'] = pd.to_numeric(df['time'])
             df['close'] = pd.to_numeric(df['close'])
+            df['high'] = pd.to_numeric(df['high'])
+            df['low'] = pd.to_numeric(df['low'])
             df = df.sort_values('time')
 
-            df['rsi'] = calculate_rsi(df, RSI_PERIOD)
+            df['rsi'] = calculate_rsi(df)
+            df['ema'] = calculate_ema(df)
 
             current = df.iloc[-2]
             previous = df.iloc[-3]
 
-            if current['time'] == last_candle_time:
+            if current['time'] == last_time:
                 time.sleep(20)
                 continue
 
-            last_candle_time = current['time']
+            last_time = current['time']
 
-            curr_rsi = round(current['rsi'], 2)
-            prev_rsi = round(previous['rsi'], 2)
             price = current['close']
+            rsi = current['rsi']
+            prev_rsi = previous['rsi']
+            ema = current['ema']
 
-            logging.info(f"Price: {price} | RSI: {curr_rsi}")
+            prev_high = previous['high']
+            prev_low = previous['low']
 
-            if prev_rsi < 50 <= curr_rsi and last_signal != "LONG":
-                send_telegram(f"🟢 LONG\nPrice: {price}\nRSI: {curr_rsi}", GROUP_CHAT_ID)
+            logging.info(f"Price: {price}, RSI: {rsi}, EMA: {ema}")
+
+            # ======================
+            # LONG
+            # ======================
+            if (
+                prev_rsi < 45 and rsi >= 50 and
+                price > ema and
+                last_signal != "LONG"
+            ):
+                entry = round(price, 2)
+                target = round(price + TARGET_POINTS, 2)
+                sl = round(prev_low, 2)
+
+                msg = (
+                    f"🟢 LONG TRADE\n\n"
+                    f"Entry: {entry}\n"
+                    f"Target: {target}\n"
+                    f"Stop Loss: {sl}\n\n"
+                    f"RSI: {round(rsi,2)} | EMA: {round(ema,2)}\n"
+                    f"TF: {TIMEFRAME}"
+                )
+
+                send_telegram(msg)
                 last_signal = "LONG"
 
-            elif prev_rsi > 50 >= curr_rsi and last_signal != "SHORT":
-                send_telegram(f"🔴 SHORT\nPrice: {price}\nRSI: {curr_rsi}", GROUP_CHAT_ID)
+            # ======================
+            # SHORT
+            # ======================
+            elif (
+                prev_rsi > 55 and rsi <= 50 and
+                price < ema and
+                last_signal != "SHORT"
+            ):
+                entry = round(price, 2)
+                target = round(price - TARGET_POINTS, 2)
+                sl = round(prev_high, 2)
+
+                msg = (
+                    f"🔴 SHORT TRADE\n\n"
+                    f"Entry: {entry}\n"
+                    f"Target: {target}\n"
+                    f"Stop Loss: {sl}\n\n"
+                    f"RSI: {round(rsi,2)} | EMA: {round(ema,2)}\n"
+                    f"TF: {TIMEFRAME}"
+                )
+
+                send_telegram(msg)
                 last_signal = "SHORT"
 
         except Exception as e:
-            logging.error(f"Loop Error: {e}")
+            logging.error(e)
             time.sleep(10)
 
         time.sleep(30)
 
 # ==============================
-# 🤖 TELEGRAM LISTENER
-# ==============================
-def listen_telegram():
-    logging.info("🤖 Telegram listener started")
-
-    last_update_id = None
-
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            params = {"timeout": 30}
-
-            if last_update_id:
-                params["offset"] = last_update_id + 1
-
-            res = requests.get(url, params=params, timeout=35)
-            data = res.json()
-
-            for update in data.get("result", []):
-                last_update_id = update["update_id"]
-
-                message = update.get("message", {})
-                text = message.get("text", "")
-                chat_id = message.get("chat", {}).get("id")
-
-                if not text:
-                    continue
-
-                logging.info(f"📩 {text}")
-
-                if "/rsi" in text.lower():
-                    reply = get_latest_rsi()
-                    send_telegram(reply, chat_id)
-
-        except Exception as e:
-            logging.error(f"Listener Error: {e}")
-            time.sleep(5)
-
-# ==============================
-# 🌐 FLASK
+# FLASK
 # ==============================
 @app.route("/")
 def home():
-    return "Bot running 🚀"
+    return "Trading Bot Running 🚀"
 
 # ==============================
-# ▶️ MAIN
+# MAIN
 # ==============================
 if __name__ == "__main__":
-    logging.info("🚀 Starting bot...")
-
     threading.Thread(target=run_bot, daemon=True).start()
-    threading.Thread(target=listen_telegram, daemon=True).start()
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
