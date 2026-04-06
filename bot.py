@@ -6,10 +6,10 @@ import threading
 import time
 import os
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
 
 # ==============================
-# 🔐 CONFIGURATION
+# 🔐 CONFIG
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -17,36 +17,31 @@ CHAT_ID = os.getenv("CHAT_ID")
 SYMBOL = "BTCUSDTPERP"
 RSI_PERIOD = 14
 
+app = Flask(__name__)
+
 # ==============================
-# 📩 TELEGRAM FUNCTION
+# 📩 TELEGRAM
 # ==============================
 def send_telegram(msg):
     try:
-        if not BOT_TOKEN or not CHAT_ID:
-            print("Missing BOT_TOKEN or CHAT_ID")
-            return
-
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
         res = requests.post(
             url,
             data={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
 
-        response = res.json()
-        if not response.get("ok"):
-            print("Telegram Error:", response)
+        if not res.json().get("ok"):
+            print("Telegram Error:", res.text)
 
     except Exception as e:
         print("Telegram Exception:", e)
 
 # ==============================
-# 📊 RSI CALCULATION
+# 📊 RSI
 # ==============================
 def calculate_rsi(prices, period=14):
     delta = np.diff(prices)
-
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
 
@@ -59,7 +54,7 @@ def calculate_rsi(prices, period=14):
     return rsi
 
 # ==============================
-# 🔁 BOT LOGIC
+# 🤖 BOT LOGIC
 # ==============================
 price_data = []
 last_signal = None
@@ -100,12 +95,6 @@ def on_message(ws, message):
     except Exception as e:
         print("Message Error:", e)
 
-def on_error(ws, error):
-    print("WebSocket Error:", error)
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket Closed:", close_status_code, close_msg)
-
 def on_open(ws):
     print("✅ WebSocket Connected")
 
@@ -123,8 +112,14 @@ def on_open(ws):
 
     ws.send(json.dumps(subscribe_msg))
 
+def on_error(ws, error):
+    print("WebSocket Error:", error)
+
+def on_close(ws, code, msg):
+    print("WebSocket Closed:", code, msg)
+
 # ==============================
-# 🔄 AUTO RECONNECT (IMPORTANT)
+# 🔄 AUTO RECONNECT
 # ==============================
 def start_bot():
     ws_url = "wss://api.delta.exchange/v2/ws"
@@ -146,35 +141,31 @@ def start_bot():
             )
 
             ws.run_forever()
+
         except Exception as e:
             print("Reconnect Error:", e)
 
-        print("🔄 Reconnecting in 5 seconds...")
+        print("🔄 Reconnecting in 5s...")
         time.sleep(5)
 
 # ==============================
-# 🌐 DUMMY HTTP SERVER
+# 🌐 FLASK ROUTES
 # ==============================
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
+@app.route("/")
+def home():
+    return "Bot is running 🚀"
 
-def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("", port), Handler)
-    print(f"🌐 Server running on port {port}")
-    server.serve_forever()
+@app.route("/health")
+def health():
+    return {"status": "ok"}
 
 # ==============================
 # ▶️ MAIN
 # ==============================
 if __name__ == "__main__":
-    print("🚀 Delta RSI Bot Running...")
+    print("🚀 Bot starting...")
 
-    # Start bot in background
     threading.Thread(target=start_bot, daemon=True).start()
 
-    # Start HTTP server (required for Render)
-    run_server()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
