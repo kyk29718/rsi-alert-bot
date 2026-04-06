@@ -14,8 +14,8 @@ CHAT_ID = os.getenv("5939554496")
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-        print("Sent:", msg)
+        res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        print("Telegram Response:", res.text)
     except Exception as e:
         print("Telegram Error:", e)
 
@@ -48,16 +48,20 @@ def run_bot():
     last_signal = None
     last_candle_time = None
 
+    print("🚀 Bot started (console)")
     send_telegram("🚀 RSI Alert Bot Started")
 
     while True:
+        print("🔁 Bot loop running...")   # DEBUG
+
         try:
+            print("📡 Fetching data...")  # DEBUG
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
 
             df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
             df['rsi'] = rsi(df, RSI_PERIOD)
 
-            # Use only closed candle
+            # Use only CLOSED candle
             candle_time = df['time'].iloc[-2]
 
             if candle_time == last_candle_time:
@@ -73,8 +77,9 @@ def run_bot():
             high = df['high'].iloc[-2]
             low = df['low'].iloc[-2]
 
-            print(prev_rsi, curr_rsi)
+            print("RSI:", prev_rsi, "→", curr_rsi)  # DEBUG
 
+            # ================= SIGNAL =================
             # LONG
             if prev_rsi < 50 and curr_rsi >= 50 and last_signal != "LONG":
                 msg = f"""
@@ -104,11 +109,11 @@ RSI: {round(curr_rsi,2)}
             time.sleep(30)
 
         except Exception as e:
-            print("Error:", e)
+            print("❌ Error:", e)
             time.sleep(10)
 
 # ==============================
-# 🌐 KEEP ALIVE SERVER (IMPORTANT)
+# 🌐 KEEP ALIVE (FOR RENDER FREE)
 # ==============================
 def keep_alive():
     from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -123,7 +128,8 @@ def keep_alive():
     server.serve_forever()
 
 # ==============================
-# 🚀 START BOTH THREADS
+# 🚀 START (IMPORTANT FIX)
 # ==============================
-threading.Thread(target=keep_alive).start()
-threading.Thread(target=run_bot).start()
+if __name__ == "__main__":
+    threading.Thread(target=keep_alive).start()
+    run_bot()   # 👈 IMPORTANT (no thread here)
