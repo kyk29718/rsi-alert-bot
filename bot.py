@@ -25,7 +25,7 @@ RSI_PERIOD = 14
 EMA_PERIOD = 50
 TARGET_POINTS = 200
 
-BASE_URL = "https://api.india.delta.exchange"
+BASE_URL = "https://api.delta.exchange"
 
 # ==============================
 # TELEGRAM
@@ -73,7 +73,7 @@ def run_bot():
             data = res.json()
             result = data.get("result", [])
 
-            if len(result) < 50:
+            if len(result) < 30:
                 time.sleep(30)
                 continue
 
