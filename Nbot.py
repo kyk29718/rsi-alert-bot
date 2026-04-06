@@ -131,5 +131,8 @@ def keep_alive():
 # 🚀 START (IMPORTANT FIX)
 # ==============================
 if __name__ == "__main__":
+    print("File started")
+
+    import threading
     threading.Thread(target=run_bot).start()
     keep_alive()   # 👈 main thread runs server
