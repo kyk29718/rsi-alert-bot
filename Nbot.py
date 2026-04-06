@@ -56,6 +56,8 @@ def run_bot():
     print("🚀 Starting RSI Strategy Engine...")
     send_telegram("🚀 RSI Alert Bot is now LIVE on Render")
 
+    send_telegram("RSI Alert Bot is now Live ")
+
     while True:
         # This print helps you see the bot is "alive" in Render logs
         print(f"⏰ Heartbeat: {time.strftime('%H:%M:%S')} - Checking Market...")
