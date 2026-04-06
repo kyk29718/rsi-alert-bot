@@ -7,38 +7,42 @@ import logging
 from flask import Flask
 
 # ==============================
-# LOGGING
+# 🔧 LOGGING
 # ==============================
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 app = Flask(__name__)
 
 # ==============================
-# CONFIG
+# 🔐 CONFIG
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "BTCUSD"
-TIMEFRAME = "15m"   # ✅ UPDATED
+TIMEFRAME = "15m"
 RSI_PERIOD = 14
 EMA_PERIOD = 50
 TARGET_POINTS = 200
 
+# ✅ FIXED API
 BASE_URL = "https://api.delta.exchange"
 
 # ==============================
-# TELEGRAM
+# 📩 TELEGRAM
 # ==============================
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
-        logging.error(e)
+        logging.error(f"Telegram Error: {e}")
 
 # ==============================
-# INDICATORS
+# 📊 INDICATORS
 # ==============================
 def calculate_rsi(df):
     delta = df['close'].diff()
@@ -51,7 +55,7 @@ def calculate_ema(df):
     return df['close'].ewm(span=EMA_PERIOD, adjust=False).mean()
 
 # ==============================
-# BOT
+# 🤖 BOT
 # ==============================
 def run_bot():
     last_signal = None
@@ -69,11 +73,15 @@ def run_bot():
                 "limit": 200
             }
 
-            res = requests.get(url, params=params)
+            res = requests.get(url, params=params, timeout=10)
             data = res.json()
             result = data.get("result", [])
 
-            if len(result) < 30:
+            # ✅ DEBUG
+            logging.info(f"Candle count: {len(result)}")
+
+            if not result or len(result) < 50:
+                logging.warning("Not enough data for signals")
                 time.sleep(30)
                 continue
 
@@ -84,6 +92,7 @@ def run_bot():
             df['low'] = pd.to_numeric(df['low'])
             df = df.sort_values('time')
 
+            # Indicators
             df['rsi'] = calculate_rsi(df)
             df['ema'] = calculate_ema(df)
 
@@ -97,17 +106,17 @@ def run_bot():
             last_time = current['time']
 
             price = current['close']
-            rsi = current['rsi']
+            rsi = round(current['rsi'], 2)
             prev_rsi = previous['rsi']
-            ema = current['ema']
+            ema = round(current['ema'], 2)
 
             prev_high = previous['high']
             prev_low = previous['low']
 
-            logging.info(f"Price: {price}, RSI: {rsi}, EMA: {ema}")
+            logging.info(f"Price: {price} | RSI: {rsi} | EMA: {ema}")
 
             # ======================
-            # LONG
+            # 🟢 LONG
             # ======================
             if (
                 prev_rsi < 45 and rsi >= 50 and
@@ -123,7 +132,7 @@ def run_bot():
                     f"Entry: {entry}\n"
                     f"Target: {target}\n"
                     f"Stop Loss: {sl}\n\n"
-                    f"RSI: {round(rsi,2)} | EMA: {round(ema,2)}\n"
+                    f"RSI: {rsi} | EMA: {ema}\n"
                     f"TF: {TIMEFRAME}"
                 )
 
@@ -131,7 +140,7 @@ def run_bot():
                 last_signal = "LONG"
 
             # ======================
-            # SHORT
+            # 🔴 SHORT
             # ======================
             elif (
                 prev_rsi > 55 and rsi <= 50 and
@@ -147,7 +156,7 @@ def run_bot():
                     f"Entry: {entry}\n"
                     f"Target: {target}\n"
                     f"Stop Loss: {sl}\n\n"
-                    f"RSI: {round(rsi,2)} | EMA: {round(ema,2)}\n"
+                    f"RSI: {rsi} | EMA: {ema}\n"
                     f"TF: {TIMEFRAME}"
                 )
 
@@ -155,22 +164,24 @@ def run_bot():
                 last_signal = "SHORT"
 
         except Exception as e:
-            logging.error(e)
+            logging.error(f"Loop Error: {e}")
             time.sleep(10)
 
         time.sleep(30)
 
 # ==============================
-# FLASK
+# 🌐 FLASK
 # ==============================
 @app.route("/")
 def home():
-    return "Trading Bot Running 🚀"
+    return "Smart Trading Bot Running 🚀"
 
 # ==============================
-# MAIN
+# ▶️ MAIN
 # ==============================
 if __name__ == "__main__":
+    logging.info("🚀 Starting bot...")
+
     threading.Thread(target=run_bot, daemon=True).start()
 
     port = int(os.environ.get("PORT", 10000))
