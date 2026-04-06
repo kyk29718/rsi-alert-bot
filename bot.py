@@ -1,133 +1,114 @@
-import ccxt
+import websocket
+import json
 import pandas as pd
-import requests
-import time
+import numpy as np
 import threading
+import time
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
 
 # ==============================
-# 🔐 TELEGRAM CONFIG
+# 🔐 CONFIGURATION
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("⚠️ BOT_TOKEN or CHAT_ID missing in environment variables!")
+SYMBOL = "BTCUSD"  # BTC/USD perpetual futures
+RSI_PERIOD = 14
 
+# ==============================
+# 📩 TELEGRAM FUNCTION
+# ==============================
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        res = requests.get(url, params={"chat_id": CHAT_ID, "text": msg})
+        res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
         if res.status_code != 200:
-            print("❌ Telegram Error:", res.text)
-        else:
-            print("✅ Sent:", msg)
+            print("Telegram Error:", res.text)
     except Exception as e:
-        print("📡 Telegram Exception:", e)
+        print("Telegram Exception:", e)
 
 # ==============================
-# ⚙️ SETTINGS
+# 📊 RSI CALCULATION
 # ==============================
-symbol = 'BTC/USDT'
-timeframe = '15m'
-RSI_PERIOD = 14
-TARGET_POINTS = 200
-
-exchange = ccxt.binance({'options': {'defaultType': 'future'}})
-
-# ==============================
-# 📊 RSI FUNCTION
-# ==============================
-def rsi(data, period=14):
-    delta = data['close'].diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+def calculate_rsi(prices, period=14):
+    delta = np.diff(prices)
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(period).mean()
+    avg_loss = pd.Series(loss).rolling(period).mean()
+    rs = avg_gain / avg_loss.replace(0, 0.00001)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 # ==============================
-# 🔁 BOT LOOP
+# 🔁 BOT LOGIC
 # ==============================
-def run_bot():
-    last_signal = None
-    last_candle_time = None
+price_data = []
 
-    # Send startup message
+last_signal = None
+
+def on_message(ws, message):
+    global price_data, last_signal
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
-        df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
-        df['rsi'] = rsi(df, RSI_PERIOD)
-        price = df['close'].iloc[-2]
-        curr_rsi = df['rsi'].iloc[-2]
-        send_telegram(f"🚀 RSI Bot Started!\nPrice: {price}\nRSI: {round(curr_rsi,2)}")
+        msg = json.loads(message)
+        if 'type' in msg and msg['type'] == 'trade' and msg['symbol'] == SYMBOL:
+            price = float(msg['price'])
+            price_data.append(price)
+
+            # Keep last 100 prices
+            if len(price_data) > 100:
+                price_data = price_data[-100:]
+
+            if len(price_data) >= RSI_PERIOD:
+                rsi_series = calculate_rsi(price_data, RSI_PERIOD)
+                curr_rsi = round(rsi_series.iloc[-1], 2)
+                prev_rsi = round(rsi_series.iloc[-2], 2)
+
+                # LONG signal
+                if prev_rsi < 50 <= curr_rsi and last_signal != "LONG":
+                    send_telegram(f"🟢 LONG SIGNAL\nPrice: {price}\nRSI: {curr_rsi}")
+                    last_signal = "LONG"
+
+                # SHORT signal
+                elif prev_rsi > 50 >= curr_rsi and last_signal != "SHORT":
+                    send_telegram(f"🔴 SHORT SIGNAL\nPrice: {price}\nRSI: {curr_rsi}")
+                    last_signal = "SHORT"
+
     except Exception as e:
-        print("Startup fetch error:", e)
-        send_telegram("⚠️ RSI Bot started but failed to fetch initial price!")
+        print("WebSocket Message Error:", e)
 
-    while True:
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
-            df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
-            df['rsi'] = rsi(df, RSI_PERIOD)
+def on_error(ws, error):
+    print("WebSocket Error:", error)
 
-            # Use last closed candle
-            candle_time = df['time'].iloc[-2]
-            if candle_time == last_candle_time:
-                time.sleep(30)
-                continue
-            last_candle_time = candle_time
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket Closed:", close_status_code, close_msg)
 
-            prev_rsi = df['rsi'].iloc[-3]
-            curr_rsi = df['rsi'].iloc[-2]
-            price = df['close'].iloc[-2]
-            high = df['high'].iloc[-2]
-            low = df['low'].iloc[-2]
-
-            print(f"⏰ Candle Closed | Price: {price} | RSI: {round(curr_rsi,2)}")
-
-            # LONG
-            if prev_rsi < 50 and curr_rsi >= 50 and last_signal != "LONG":
-                msg = f"🚀 LONG SIGNAL\nPrice: {price}\nSL: {low}\nTarget: {price + TARGET_POINTS}\nRSI: {round(curr_rsi,2)}"
-                send_telegram(msg)
-                last_signal = "LONG"
-
-            # SHORT
-            elif prev_rsi > 50 and curr_rsi <= 50 and last_signal != "SHORT":
-                msg = f"🔻 SHORT SIGNAL\nPrice: {price}\nSL: {high}\nTarget: {price - TARGET_POINTS}\nRSI: {round(curr_rsi,2)}"
-                send_telegram(msg)
-                last_signal = "SHORT"
-
-            time.sleep(30)
-
-        except Exception as e:
-            print("Loop error:", e)
-            time.sleep(15)
+def on_open(ws):
+    print("WebSocket Connection Opened")
+    # Subscribe to BTCUSD trades
+    subscribe_msg = {
+        "type": "subscribe",
+        "channels": [
+            {"name": "trades", "symbols": [SYMBOL]}
+        ]
+    }
+    ws.send(json.dumps(subscribe_msg))
 
 # ==============================
-# 🌐 KEEP ALIVE SERVER
+# 🌐 RUN BOT
 # ==============================
-def keep_alive():
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"Bot is running")
-        def log_message(self, format, *args):
-            return
+def start_bot():
+    ws_url = "wss://api.delta.exchange/v2/ws"
+    ws = websocket.WebSocketApp(
+        ws_url,
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close
+    )
+    ws.run_forever()
 
-    port = int(os.environ.get("PORT", 10000))  # Render port
-    server = HTTPServer(('0.0.0.0', port), Handler)
-    print(f"✅ Web Server running on port {port}")
-    server.serve_forever()
-
-# ==============================
-# 🚀 START BOTH THREADS
-# ==============================
 if __name__ == "__main__":
-    threading.Thread(target=keep_alive, daemon=True).start()
-    threading.Thread(target=run_bot, daemon=True).start()
-
-    # Keep main thread alive
-    while True:
-        time.sleep(60)
+    threading.Thread(target=start_bot).start()
+    print("🚀 Delta RSI Bot Running...")
