@@ -8,8 +8,8 @@ import os
 # ==============================
 # 🔐 TELEGRAM (ENV VARIABLES)
 # ==============================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("8764213237:AAF9Ipslfo6wbTptG5f9SMXyHhS0FfGaZS0")
+CHAT_ID = os.getenv("5939554496")
 
 def send_telegram(msg):
     try:
