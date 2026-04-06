@@ -7,35 +7,37 @@ import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==============================
-# 🔐 CONFIGURATION (RENDER ENV)
+# 🔐 TELEGRAM (ENV VARIABLES)
 # ==============================
-# Ensure these match the KEYS in your Render Dashboard -> Environment tab
+# Fetching by KEY name. Ensure these keys are set in Render's dashboard.
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID") 
+CHAT_ID = os.getenv("CHAT_ID")
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
-        print("⚠️ SETUP ERROR: BOT_TOKEN or CHAT_ID not found in Environment Variables.")
+        print("❌ Error: BOT_TOKEN or CHAT_ID not set in Environment Variables")
         return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        # HTML mode is more stable for bots than Markdown
-        payload = {
-            "chat_id": CHAT_ID, 
-            "text": msg, 
-            "parse_mode": "HTML"
-        }
-        res = requests.post(url, data=payload)
-        
-        if res.status_code == 200:
-            print(f"✅ Telegram: Message sent to {CHAT_ID}")
-        else:
-            print(f"❌ Telegram Error {res.status_code}: {res.text}")
+        res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        print("Telegram Response:", res.text)
     except Exception as e:
-        print(f"📡 Connection Error: {e}")
+        print("Telegram Error:", e)
 
 # ==============================
-# 📊 RSI CALCULATION
+# ⚙️ SETTINGS
+# ==============================
+symbol = 'BTC/USDT'
+timeframe = '15m'
+RSI_PERIOD = 14
+TARGET_POINTS = 200
+
+exchange = ccxt.binance({
+    'options': {'defaultType': 'future'}
+})
+
+# ==============================
+# 📊 RSI FUNCTION
 # ==============================
 def rsi(data, period=14):
     delta = data['close'].diff()
@@ -45,103 +47,85 @@ def rsi(data, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==============================
-# 🔁 TRADING ENGINE (POLLING)
+# 🔁 BOT LOOP
 # ==============================
 def run_bot():
-    symbol = 'BTC/USDT'
-    timeframe = '15m'
-    exchange = ccxt.binance({'options': {'defaultType': 'future'}})
-    
     last_signal = None
     last_candle_time = None
 
-    print("🚀 Strategy Engine Active. Monitoring BTC/USDT...")
-    send_telegram("<b>🤖 Bot Online</b>\nMonitoring 15m RSI Signals.")
+    print("🚀 Bot logic started...")
+    send_telegram("🚀 RSI Alert Bot Started")
 
     while True:
-        # Heartbeat log to show Render the bot is still looping
-        print(f"⏰ Heartbeat: {time.strftime('%H:%M:%S')} - Checking Market...")
-
         try:
-            # Fetch last 100 candles
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
             df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
-            df['rsi'] = rsi(df, 14)
+            df['rsi'] = rsi(df, RSI_PERIOD)
 
-            # Analyze the last CLOSED candle (index -2)
+            # Use only CLOSED candle
             candle_time = df['time'].iloc[-2]
 
             if candle_time == last_candle_time:
-                time.sleep(30) # Wait 30 seconds before polling again
+                time.sleep(30)
                 continue
 
             last_candle_time = candle_time
-            
+
             prev_rsi = df['rsi'].iloc[-3]
             curr_rsi = df['rsi'].iloc[-2]
+
             price = df['close'].iloc[-2]
             high = df['high'].iloc[-2]
             low = df['low'].iloc[-2]
 
-            print(f"📊 Candle Close: {price} | RSI: {round(curr_rsi, 2)}")
+            print(f"Candle closed at {price}. RSI: {round(curr_rsi, 2)}")
 
-            # --- SIGNAL LOGIC ---
-            # LONG: RSI crosses UP through 50
+            # LONG Signal
             if prev_rsi < 50 and curr_rsi >= 50 and last_signal != "LONG":
-                msg = (f"🚀 <b>LONG SIGNAL</b>\n\n"
-                       f"Price: {price}\n"
-                       f"SL: {low}\n"
-                       f"Target: {price + 200}\n"
-                       f"RSI: {round(curr_rsi, 2)}")
+                msg = f"🚀 LONG SIGNAL\n\nPrice: {price}\nSL: {low}\nTarget: {price + TARGET_POINTS}\nRSI: {round(curr_rsi,2)}"
                 send_telegram(msg)
                 last_signal = "LONG"
 
-            # SHORT: RSI crosses DOWN through 50
+            # SHORT Signal
             elif prev_rsi > 50 and curr_rsi <= 50 and last_signal != "SHORT":
-                msg = (f"🔻 <b>SHORT SIGNAL</b>\n\n"
-                       f"Price: {price}\n"
-                       f"SL: {high}\n"
-                       f"Target: {price - 200}\n"
-                       f"RSI: {round(curr_rsi, 2)}")
+                msg = f"🔻 SHORT SIGNAL\n\nPrice: {price}\nSL: {high}\nTarget: {price - TARGET_POINTS}\nRSI: {round(curr_rsi,2)}"
                 send_telegram(msg)
                 last_signal = "SHORT"
 
             time.sleep(30)
 
         except Exception as e:
-            print(f"❌ Loop Error: {e}")
-            time.sleep(20)
+            print("❌ Bot Loop Error:", e)
+            time.sleep(10)
 
 # ==============================
-# 🌐 WEB SERVER (RENDER HEALTH)
+# 🌐 WEB SERVER (RENDER HEALTH CHECK)
 # ==============================
-class HealthCheck(BaseHTTPRequestHandler):
+class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b'Bot is Active')
+        self.wfile.write(b'Bot is active')
 
     def do_HEAD(self):
-        # This prevents the 501 Unsupported Method error on Render
+        # This fixes the "501 Unsupported method ('HEAD')" error
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, format, *args):
-        return # Keeps logs clean by not printing every health check
-
 def keep_alive():
-    # Use the port assigned by Render
+    # Render provides a PORT env variable; default to 10000 if not found
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheck)
-    print(f"✅ Web Health Check listening on port {port}")
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"✅ Health check server listening on port {port}")
     server.serve_forever()
 
 # ==============================
-# 🏁 MAIN START
+# 🚀 MAIN ENTRY
 # ==============================
 if __name__ == "__main__":
-    # Start web server in background thread
-    threading.Thread(target=keep_alive, daemon=True).start()
+    # Start the web server in a background thread
+    web_thread = threading.Thread(target=keep_alive, daemon=True)
+    web_thread.start()
     
-    # Start bot loop in main thread
+    # Start the bot in the main thread
     run_bot()
